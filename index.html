@@ -524,7 +524,16 @@ setInterval(()=>{
 },30000);
 
 // HELPERS
-// Use local date parts to avoid UTC timezone shift (IST = UTC+5:30)
+// Safe date parser — splits YYYY-MM-DD directly, no timezone shift ever
+function parseLocalDate(str){
+  const[y,m,d]=str.split('-').map(Number);
+  return new Date(y,m-1,d);
+}
+// Safe date formatter for display
+function fmtDate(str){
+  return parseLocalDate(str).toLocaleDateString('en-IN',{weekday:'short',day:'numeric',month:'short',year:'numeric'});
+}
+// Safe dateKey — uses local date parts, never toISOString (which shifts to UTC)
 const dateKey=d=>{
   const y=d.getFullYear();
   const m=String(d.getMonth()+1).padStart(2,'0');
@@ -657,7 +666,7 @@ function renderRequests(){
 async function approveReq(i){
   if(!isAdmin)return;
   const r=pendingRequests[i];
-  const d=new Date(r.date+'T00:00:00');
+  const d=parseLocalDate(r.date);
   const s=getSch(d);
   s.morning=s.morning.filter(e=>e.id!==r.crewId);
   s.evening=s.evening.filter(e=>e.id!==r.crewId);
@@ -767,7 +776,7 @@ function renderHistList(type,crewId,fm){
     const[y,m]=mk.split('-');
     html+=`<div class="hist-group">${MONTHS[+m-1]} ${y} <span style="font-weight:400;color:var(--text3);">(${groups[mk].length} ${unit}${groups[mk].length!==1?'s':''})</span></div>`;
     groups[mk].forEach(l=>{
-      const fmt=new Date(l.date+'T00:00:00').toLocaleDateString('en-IN',{weekday:'short',day:'numeric',month:'short',year:'numeric'});
+      const fmt=fmtDate(l.date);
       const lbl=isOT?`<div class="hist-label">${sl[l.shift]||l.shift||'—'}</div>`:`<div class="hist-label" style="color:var(--red-text);font-weight:600;">On leave</div>`;
       const delBtn=isAdmin?`<button onclick="deleteHistEntry('${type}',${crewId},'${l.date}','${l.shift||''}')" style="margin-left:auto;padding:2px 8px;font-size:10px;border-radius:6px;border:1px solid var(--red-border);background:var(--red-bg);color:var(--red-text);cursor:pointer;font-family:inherit;">Remove</button>`:'';
       html+=`<div class="hist-item"><div class="hist-date">${fmt}</div>${lbl}${l.note?`<div class="hist-note">"${l.note}"</div>`:'<div style="flex:1"></div>'}${delBtn}</div>`;
@@ -844,7 +853,7 @@ function updateReqOpts(){
   if(type==='leave'){sg.style.display='none';return;}
   sg.style.display='';
   if(type==='ot'&&portalCrewId&&dateVal){
-    const reg=getRegShift(portalCrewId,new Date(dateVal+'T00:00:00'));
+    const reg=getRegShift(portalCrewId,parseLocalDate(dateVal));
     if(reg==='morning'){sel.innerHTML='<option value="evening">Evening (14:00–22:00) — OT shift</option>';lbl.textContent='OT shift (your regular is Morning)';}
     else if(reg==='evening'){sel.innerHTML='<option value="morning">Morning (06:00–14:00) — OT shift</option>';lbl.textContent='OT shift (your regular is Evening)';}
     else{sel.innerHTML='<option value="morning">Morning (06:00–14:00)</option><option value="evening">Evening (14:00–22:00)</option>';lbl.textContent='Preferred OT shift';}
@@ -945,7 +954,7 @@ async function deleteHistEntry(type,crewId,date,shift){
   else remLeaveLog(crewId,date);
   await saveToCloud();
   // Also fix the schedule for that date if the status still shows OT/leave
-  const d=new Date(date+'T00:00:00'),s=getSch(d);
+  const d=parseLocalDate(date),s=getSch(d);
   if(type==='ot'){
     // downgrade OT status to duty on that date for this crew
     const inM=s.morning.find(e=>e.id===crewId&&e.status==='ot');
