@@ -368,7 +368,6 @@ const SUPABASE_URL='https://dnmprfuluikepeldqnbp.supabase.co';
 const SUPABASE_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRubXByZnVsdWlrZXBlbGRxbmJwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ4OTAzNDksImV4cCI6MjA5MDQ2NjM0OX0.8NijvjdHbi9d2556RjQ3T54TitTooBFkDgpP3i8LmnU';
 const SB_HDR={'Content-Type':'application/json','apikey':SUPABASE_KEY,'Authorization':'Bearer '+SUPABASE_KEY};
 const TABLE=SUPABASE_URL+'/rest/v1/appdata';
-const ADMIN_PASS='Admin@2026#';
 const MONTHS=["January","February","March","April","May","June","July","August","September","October","November","December"];
 
 const CREW=[
@@ -745,7 +744,7 @@ function openHistModal(type,crewId){
   document.getElementById(pfx+'Av').style.cssText='width:38px;height:38px;font-size:12px;flex-shrink:0;';
   document.getElementById(pfx+'Av').textContent=c.initials;
   document.getElementById(pfx+'Name').textContent=c.name;
-  document.getElementById(pfx+'Sub').textContent=c.empId+' · '+c.email;
+  document.getElementById(pfx+'Sub').textContent=isAdmin?(c.empId+' · '+c.email):c.empId;
   document.getElementById(pfx+'Mo').textContent=mo;
   document.getElementById(pfx+'Al').textContent=al;
   const months=[...new Set(logs.map(l=>l.date.slice(0,7)))].sort((a,b)=>b.localeCompare(a));
@@ -797,7 +796,7 @@ function renderCrew(){
     else{const entry=inM||inE||inO||{status:'off'};shiftLabel=inM?'Morning':inE?'Evening':'—';statusHtml=pill(entry.status);}
     const eb=isAdmin?`<button class="btn btn-sm" onclick="openEditModal(${c.id})">Edit</button>`:'';
     return`<tr>
-      <td><div style="display:flex;align-items:center;gap:10px;"><div class="avatar av-${c.color}" style="flex-shrink:0;">${c.initials}</div><div><div class="crew-name">${c.name}</div><div class="crew-detail">${c.empId} &middot; <a href="mailto:${c.email}">${c.email}</a> &middot; ${c.phone}</div></div></div></td>
+      <td><div style="display:flex;align-items:center;gap:10px;"><div class="avatar av-${c.color}" style="flex-shrink:0;">${c.initials}</div><div><div class="crew-name">${c.name}</div><div class="crew-detail">${c.empId}${isAdmin?` &middot; <a href="mailto:${c.email}">${c.email}</a> &middot; ${c.phone}`:' &middot; <span style="color:var(--text3);font-style:italic;">contact visible to admin only</span>'}</div></div></div></td>
       <td style="white-space:nowrap;font-size:13px;">${shiftLabel}</td><td>${statusHtml}</td>
       <td><span class="mono" style="color:var(--amber-text)">${otMo(c.id)}</span><span style="font-size:10px;color:var(--text2)"> / ${otAll(c.id)}</span></td>
       <td><span class="mono" style="color:var(--red-text)">${lvMo(c.id)}</span><span style="font-size:10px;color:var(--text2)"> / ${lvAll(c.id)}</span></td>
@@ -808,10 +807,26 @@ function renderCrew(){
 
 // PORTAL
 function portalLookup(){
-  const c=crewByEmpId(document.getElementById('portalEmpId').value);
-  document.getElementById('portalErr').style.display=c?'none':'block';
-  document.getElementById('portalContent').style.display=c?'':'none';
-  if(!c){portalCrewId=null;return;}
+  const eidInput=document.getElementById('portalEmpId').value.trim();
+  const errEl=document.getElementById('portalErr');
+  // Rate limit wrong Employee ID attempts
+  if(!checkEmpIdRate(eidInput)){
+    errEl.textContent='Too many failed attempts. Please wait 10 minutes.';
+    errEl.style.display='block';
+    document.getElementById('portalContent').style.display='none';
+    portalCrewId=null;return;
+  }
+  const c=crewByEmpId(eidInput);
+  if(!c){
+    recordEmpIdFail(eidInput);
+    errEl.textContent='Employee ID not found. Please check and try again.';
+    errEl.style.display='block';
+    document.getElementById('portalContent').style.display='none';
+    portalCrewId=null;return;
+  }
+  clearEmpIdFail(eidInput);
+  errEl.style.display='none';
+  document.getElementById('portalContent').style.display='';
   portalCrewId=c.id;
   const s=getSch(currentDate);
   const inM=s.morning.find(e=>e.id===c.id),inE=s.evening.find(e=>e.id===c.id),inO=s.off.find(e=>e.id===c.id);
@@ -861,11 +876,16 @@ function updateReqOpts(){
 }
 async function submitRequest(){
   const type=document.getElementById('reqType').value,date=document.getElementById('reqDate').value;
-  const note=document.getElementById('reqNote').value.trim(),shift=document.getElementById('reqShift').value;
+  const note=sanitize(document.getElementById('reqNote').value);
+  const shift=document.getElementById('reqShift').value;
   if(!date){alert('Please select a date.');return;}
+  // Cooldown check — prevent request spam
+  if(!checkReqCooldown(portalCrewId)) return;
   const req={crewId:portalCrewId,type,date,note,shift,submittedAt:new Date().toISOString()};
   if(type==='ot')req.otShift=shift;
-  pendingRequests.push(req);await saveToCloud();
+  pendingRequests.push(req);
+  setReqCooldown(portalCrewId);
+  await saveToCloud();
   document.getElementById('reqSuccess').style.display='';renderSummary();renderRequests();
   setTimeout(()=>{closeModal('requestModal');portalLookup();},2000);
 }
@@ -971,14 +991,81 @@ async function deleteHistEntry(type,crewId,date,shift){
   openHistModal(type,crewId);
   renderToday();renderOT();renderLeave();
 }
-function doLogin(){
-  if(document.getElementById('pwInput').value===ADMIN_PASS){
-    isAdmin=true;closeModal('loginModal');
+// ─── SECURITY ─────────────────────────────────────────────
+// SHA-256 of 'Admin@2026#' — so plain password never sits in a comparison
+const ADMIN_HASH='12bcb5941865513c77c73ce4d0e0c7ab9a325527edc7e457f8cdf03a15762bb2';
+
+async function sha256(str){
+  const buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
+// Admin login rate limiter — max 5 attempts, then 15 min lockout
+let adminAttempts=0,adminLockUntil=0;
+function checkAdminRate(){
+  const now=Date.now();
+  if(now<adminLockUntil){
+    const mins=Math.ceil((adminLockUntil-now)/60000);
+    document.getElementById('pwError').textContent=`Too many attempts. Try again in ${mins} minute(s).`;
+    document.getElementById('pwError').style.display='block';
+    return false;
+  }
+  return true;
+}
+function recordAdminFail(){
+  adminAttempts++;
+  if(adminAttempts>=5){adminLockUntil=Date.now()+900000;adminAttempts=0;}
+}
+
+// Employee ID rate limiter — max 5 wrong attempts per 10 minutes
+const empIdFails={};
+function checkEmpIdRate(eid){
+  const now=Date.now(),k=eid.trim();
+  if(!empIdFails[k])empIdFails[k]={n:0,until:0};
+  if(now<empIdFails[k].until) return false;
+  if(now>empIdFails[k].until&&empIdFails[k].n>0&&now-empIdFails[k].last>600000) empIdFails[k].n=0;
+  return true;
+}
+function recordEmpIdFail(eid){
+  const k=eid.trim(),now=Date.now();
+  if(!empIdFails[k])empIdFails[k]={n:0,until:0};
+  empIdFails[k].n++;empIdFails[k].last=now;
+  if(empIdFails[k].n>=5){empIdFails[k].until=now+600000;empIdFails[k].n=0;}
+}
+function clearEmpIdFail(eid){if(empIdFails[eid.trim()])empIdFails[eid.trim()].n=0;}
+
+// Request cooldown — 1 submission per employee per hour
+const reqCooldown={};
+function checkReqCooldown(crewId){
+  const now=Date.now();
+  if(reqCooldown[crewId]&&now<reqCooldown[crewId]){
+    const mins=Math.ceil((reqCooldown[crewId]-now)/60000);
+    alert(`You already submitted a request recently. Please wait ${mins} more minute(s) before submitting again.`);
+    return false;
+  }
+  return true;
+}
+function setReqCooldown(crewId){reqCooldown[crewId]=Date.now()+3600000;}
+
+// Input sanitizer — strip HTML/script injection attempts
+function sanitize(str){return String(str||'').replace(/[<>"'`\\]/g,'').trim().substring(0,300);}
+
+async function doLogin(){
+  if(!checkAdminRate()) return;
+  const pw=document.getElementById('pwInput').value;
+  const hash=await sha256(pw);
+  if(hash===ADMIN_HASH){
+    isAdmin=true;adminAttempts=0;closeModal('loginModal');
     document.getElementById('adminBar').style.display='flex';
     document.getElementById('loginBtn').style.display='none';
-    document.getElementById('pwInput').value='';document.getElementById('pwError').style.display='none';
-    renderToday();
-  }else{document.getElementById('pwError').style.display='block';}
+    document.getElementById('pwInput').value='';
+    document.getElementById('pwError').style.display='none';
+    renderToday();renderCrew();
+  }else{
+    recordAdminFail();
+    document.getElementById('pwError').textContent='Incorrect password.';
+    document.getElementById('pwError').style.display='block';
+  }
 }
 function doLogout(){
   isAdmin=false;document.getElementById('adminBar').style.display='none';document.getElementById('loginBtn').style.display='';
