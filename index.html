@@ -401,6 +401,8 @@ let scheduleData={},pendingRequests=[],otLog={},leaveLog={};
 // ─── SUPABASE SYNC ────────────────────────────────────────
 function setSyncState(s,m){document.getElementById('syncDot').className='sync-dot '+s;document.getElementById('syncMsg').textContent=m;}
 
+let lastSaveTime=0; // track when we last saved so realtime doesn't overwrite us
+
 async function sbGet(key){
   try{
     const r=await fetch(`${TABLE}?key=eq.${encodeURIComponent(key)}&select=value`,{headers:SB_HDR});
@@ -411,7 +413,6 @@ async function sbGet(key){
 }
 
 async function sbSet(key,value){
-  // Use UPSERT — insert if not exists, update if exists
   const r=await fetch(TABLE,{
     method:'POST',
     headers:{
@@ -460,14 +461,15 @@ async function loadFromCloud(){
 
 async function saveToCloud(){
   if(isSaving)return; isSaving=true;
+  lastSaveTime=Date.now(); // record save time to block realtime overwrites
   setSyncState('syncing','Saving...');
   try{
-    await Promise.all([
-      sbSet('scheduleData',scheduleData),
-      sbSet('pendingRequests',pendingRequests),
-      sbSet('otLog',otLog),
-      sbSet('leaveLog',leaveLog)
-    ]);
+    // Save sequentially — not parallel — to avoid Supabase rate issues
+    await sbSet('scheduleData',scheduleData);
+    await sbSet('pendingRequests',pendingRequests);
+    await sbSet('otLog',otLog);
+    await sbSet('leaveLog',leaveLog);
+    lastSaveTime=Date.now(); // update after all saves complete
     setSyncState('ok','Saved: '+new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}));
   }catch(e){
     console.error('Save error:',e.message);
@@ -488,8 +490,12 @@ function startRealtime(){
     ws.onmessage=e=>{
       const msg=JSON.parse(e.data);
       if((msg.event==='INSERT'||msg.event==='UPDATE'||msg.event==='DELETE'||
-          (msg.payload&&msg.payload.data))&&!isSaving){
-        loadFromCloud().then(refreshAll);
+          (msg.payload&&msg.payload.data))){
+        // Only reload if WE did not just save (give 5 second grace period after our own saves)
+        const timeSinceSave=Date.now()-lastSaveTime;
+        if(!isSaving && timeSinceSave>5000){
+          loadFromCloud().then(refreshAll);
+        }
       }
     };
     ws.onerror=()=>{};
@@ -497,8 +503,11 @@ function startRealtime(){
   }catch(e){}
 }
 
-// Fallback polling every 30s (catches any missed realtime events)
-setInterval(()=>{if(!isAdmin&&!isSaving)loadFromCloud().then(refreshAll);},30000);
+// Fallback polling every 30s — skip if we saved recently
+setInterval(()=>{
+  const timeSinceSave=Date.now()-lastSaveTime;
+  if(!isAdmin&&!isSaving&&timeSinceSave>5000) loadFromCloud().then(refreshAll);
+},30000);
 
 // HELPERS
 const dateKey=d=>d.toISOString().split('T')[0];
