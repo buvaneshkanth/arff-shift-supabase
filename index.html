@@ -413,19 +413,33 @@ async function sbGet(key){
 }
 
 async function sbSet(key,value){
-  const r=await fetch(TABLE,{
-    method:'POST',
+  // First try to update existing row (PATCH)
+  const patch=await fetch(`${TABLE}?key=eq.${encodeURIComponent(key)}`,{
+    method:'PATCH',
     headers:{
       'Content-Type':'application/json',
       'apikey':SUPABASE_KEY,
       'Authorization':'Bearer '+SUPABASE_KEY,
-      'Prefer':'resolution=merge-duplicates,return=minimal'
+      'Prefer':'return=minimal'
     },
-    body:JSON.stringify({key,value:JSON.stringify(value)})
+    body:JSON.stringify({value:JSON.stringify(value)})
   });
-  if(!r.ok){
-    const err=await r.text();
-    throw new Error(`Supabase error ${r.status}: ${err}`);
+  if(!patch.ok){const e=await patch.text();throw new Error(`PATCH ${patch.status}: ${e}`);}
+  // If no rows were updated (new key), insert instead
+  const check=await fetch(`${TABLE}?key=eq.${encodeURIComponent(key)}&select=key`,{headers:SB_HDR});
+  const rows=await check.json();
+  if(!rows.length){
+    const ins=await fetch(TABLE,{
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'apikey':SUPABASE_KEY,
+        'Authorization':'Bearer '+SUPABASE_KEY,
+        'Prefer':'return=minimal'
+      },
+      body:JSON.stringify({key,value:JSON.stringify(value)})
+    });
+    if(!ins.ok){const e=await ins.text();throw new Error(`INSERT ${ins.status}: ${e}`);}
   }
 }
 
@@ -510,7 +524,13 @@ setInterval(()=>{
 },30000);
 
 // HELPERS
-const dateKey=d=>d.toISOString().split('T')[0];
+// Use local date parts to avoid UTC timezone shift (IST = UTC+5:30)
+const dateKey=d=>{
+  const y=d.getFullYear();
+  const m=String(d.getMonth()+1).padStart(2,'0');
+  const day=String(d.getDate()).padStart(2,'0');
+  return`${y}-${m}-${day}`;
+};
 const crewById=id=>CREW.find(c=>c.id===id);
 const crewByEmpId=eid=>CREW.find(c=>c.empId===eid.trim());
 const curMonthKey=()=>{const n=new Date();return`${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}`;};
@@ -811,7 +831,8 @@ function openRequestModal(){
   if(!portalCrewId)return;
   const c=crewById(portalCrewId);
   document.getElementById('reqEmployeeInfo').innerHTML=`<strong>${c.name}</strong> &nbsp;·&nbsp; ${c.empId}`;
-  const today=new Date().toISOString().split('T')[0];
+  const n=new Date();
+  const today=`${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`;
   document.getElementById('reqDate').value=today;document.getElementById('reqDate').min=today;
   document.getElementById('reqType').value='shift';document.getElementById('reqNote').value='';
   document.getElementById('reqSuccess').style.display='none';
