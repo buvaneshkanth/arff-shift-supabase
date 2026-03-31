@@ -273,17 +273,15 @@ textarea.fi{resize:vertical;min-height:72px;}
       <div><div style="font-size:15px;font-weight:600;">Activity log</div><div style="font-size:12px;color:var(--text2);margin-top:2px;">All admin actions with employee ID, IP and timestamp</div></div>
       <button class="btn btn-red btn-sm" onclick="clearActivityLog()">Clear log</button>
     </div>
-
     <!-- Block management -->
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--rlg);padding:16px;margin-bottom:20px;">
-      <div style="font-size:13px;font-weight:600;margin-bottom:12px;">🚫 Blocked users</div>
+      <div style="font-size:13px;font-weight:600;margin-bottom:12px;">&#x1F6AB; Blocked users</div>
       <div id="blockedList" style="margin-bottom:12px;"></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <select class="fi" id="blockEmpSelect" style="max-width:260px;flex:1;"></select>
         <button class="btn btn-red" onclick="blockEmployee()">Block selected</button>
       </div>
     </div>
-
     <div id="activityList"></div>
   </div>
 
@@ -309,29 +307,21 @@ textarea.fi{resize:vertical;min-height:72px;}
 <div class="overlay" id="loginModal"><div class="modal">
   <h2>Admin login</h2>
   <div style="background:var(--surface2);border-radius:var(--r);padding:10px 14px;margin-bottom:16px;font-size:12px;color:var(--text2);">Only authorised ARFF crew members can access admin mode.</div>
-
-  <!-- Step 1: Employee ID + Password -->
+  <!-- Step 1 -->
   <div id="loginStep1">
-    <div class="fg"><label class="fl">Employee ID</label><input type="text" class="fi" id="loginEmpId" placeholder="Enter your Employee ID" maxlength="10" onkeydown="if(event.key==='Enter')document.getElementById('pwInput').focus()"><div class="errmsg" id="empIdError" style="display:none">Invalid Employee ID.</div></div>
+    <div class="fg"><label class="fl">Employee ID</label><input type="text" class="fi" id="loginEmpId" placeholder="Enter your Employee ID" maxlength="10" onkeydown="if(event.key==='Enter')document.getElementById('pwInput').focus()"><div class="errmsg" id="empIdError" style="display:none">Invalid Employee ID. Only ARFF crew members can login.</div></div>
     <div class="fg"><label class="fl">Password</label><input type="password" class="fi" id="pwInput" placeholder="Enter admin password" onkeydown="if(event.key==='Enter')doLogin()"><div class="errmsg" id="pwError" style="display:none">Incorrect password.</div></div>
     <div class="mactions"><button class="btn" onclick="closeModal('loginModal')">Cancel</button><button class="btn btn-navy" onclick="doLogin()">Request access</button></div>
   </div>
-
-  <!-- Step 2: OTP approval (shown after password verified) -->
+  <!-- Step 2: OTP -->
   <div id="loginStep2" style="display:none">
-    <div style="background:var(--amber-bg);border-radius:var(--r);padding:12px 14px;margin-bottom:16px;font-size:13px;color:var(--amber-text);border:1px solid var(--amber-border);">
-      ✅ Password verified! An approval code has been sent to the system admin via Telegram. Ask the admin to share the code with you.
-    </div>
-    <div class="fg"><label class="fl">Approval code (6 digits)</label><input type="text" class="fi" id="otpInput" placeholder="Enter the code sent to admin" maxlength="6" onkeydown="if(event.key==='Enter')verifyOTP()"></div>
-    <div class="errmsg" id="otpError" style="display:none">Invalid or expired code. Codes expire in 5 minutes.</div>
+    <div style="background:var(--amber-bg);border-radius:var(--r);padding:12px 14px;margin-bottom:16px;font-size:13px;color:var(--amber-text);border:1px solid var(--amber-border);">&#x2705; Password verified! An approval code has been sent to the admin via Telegram. Ask the admin to share it with you.</div>
+    <div class="fg"><label class="fl">Approval code (6 digits)</label><input type="text" class="fi" id="otpInput" placeholder="Enter the 6-digit code" maxlength="6" onkeydown="if(event.key==='Enter')verifyOTP()"><div class="errmsg" id="otpError" style="display:none">Invalid or expired code.</div></div>
     <div class="mactions"><button class="btn" onclick="cancelOTP()">Cancel</button><button class="btn btn-navy" onclick="verifyOTP()">Verify &amp; login</button></div>
   </div>
-
-  <!-- Blocked message -->
+  <!-- Blocked -->
   <div id="loginBlocked" style="display:none">
-    <div style="background:var(--red-bg);border-radius:var(--r);padding:14px;font-size:13px;color:var(--red-text);border:1px solid var(--red-border);text-align:center;">
-      🚫 Your Employee ID has been blocked from admin access.<br>Contact the system administrator.
-    </div>
+    <div style="background:var(--red-bg);border-radius:var(--r);padding:14px;font-size:13px;color:var(--red-text);border:1px solid var(--red-border);text-align:center;">&#x1F6AB; Your Employee ID has been blocked from admin access.<br>Contact the system administrator.</div>
     <div class="mactions"><button class="btn" onclick="closeModal('loginModal')">Close</button></div>
   </div>
 </div></div>
@@ -441,14 +431,14 @@ CREW.forEach((c,i)=>{c.color=i%4;c.initials=c.name.split(' ').map(w=>w[0]).slice
 let isAdmin=false,currentDate=new Date(),calViewDate,portalCrewId=null,isSaving=false,activeTab='today';
 currentDate.setHours(0,0,0,0); calViewDate=new Date(currentDate);
 let scheduleData={},pendingRequests=[],otLog={},leaveLog={},activityLog=[],blockedIds=[];
-let adminUser=null;
+let adminUser=null; // stores the crew member who is currently logged in as admin
 
 // ─── SUPABASE SYNC ────────────────────────────────────────
 function setSyncState(s,m){document.getElementById('syncDot').className='sync-dot '+s;document.getElementById('syncMsg').textContent=m;}
 
 let lastSaveTime=0; // track when we last saved so realtime doesn't overwrite us
 
-// Single call — fetch ALL rows at once
+// Single request — fetch ALL rows at once (fast!)
 async function loadFromCloud(){
   setSyncState('syncing','Loading...');
   try{
@@ -487,7 +477,7 @@ async function loadFromCloud(){
   }
 }
 
-// Single upsert per key using merge-duplicates
+// Single upsert per key
 async function sbSet(key,value){
   const r=await fetch(TABLE,{
     method:'POST',
@@ -502,7 +492,7 @@ async function sbSet(key,value){
   if(!r.ok){const e=await r.text();throw new Error(`${r.status}: ${e}`);}
 }
 
-// Save all keys in parallel — fast
+// Save all keys in parallel — much faster
 async function saveToCloud(){
   if(isSaving)return; isSaving=true;
   lastSaveTime=Date.now();
@@ -550,7 +540,7 @@ function startRealtime(){
   }catch(e){}
 }
 
-// Fallback polling every 30s — only for non-admin, skip if saved recently
+// Fallback polling every 30s — skip if we saved recently
 setInterval(()=>{
   const timeSinceSave=Date.now()-lastSaveTime;
   if(!isAdmin&&!isSaving&&timeSinceSave>5000) loadFromCloud().then(refreshAll);
@@ -764,6 +754,7 @@ function renderTracker(type){
   const barColorM=isOT?'var(--amber-border)':'var(--red-border)';
   const numColorM=isOT?'var(--amber-text)':'var(--red-text)';
   const btnLabel=isOT?'View OT dates':'View leave dates';
+  const modalFn=isOT?`openHistModal('ot',${0})`:`openHistModal('leave',${0})`;
   gridEl.innerHTML=crew.map(c=>{
     const mo=getMo(c.id),al=getAll(c.id);
     const vb=isAdmin?`<button class="tc-btn" onclick="openHistModal('${type}',${c.id})">${btnLabel} (${al} total)</button>`:'';
@@ -957,9 +948,8 @@ function openEditModal(id){
   sel.disabled=true;sel.dataset.prevStatus=entry.status;sel.dataset.prevShift=curShift;
   document.getElementById('assignShift').value=curShift;
   onAssignShiftChange();
-  // Correctly restore status — leave and dayoff in off list should show properly
-  const displayStatus=(entry.status==='off')?'duty':entry.status;
-  document.getElementById('assignStatus').value=displayStatus;
+  document.getElementById('assignStatus').value=entry.status==='off'?'duty':entry.status;
+  // Show Unassign button only in edit mode — lets admin move anyone back to unassigned cleanly
   document.getElementById('unassignBtn').style.display='';
   openModal('assignModal');
 }
@@ -1024,18 +1014,22 @@ async function deleteHistEntry(type,crewId,date,shift){
   if(!confirm(`Remove this ${type==='ot'?'overtime':'leave'} entry for ${date}?`))return;
   if(type==='ot') remOTLog(crewId,date,shift||null);
   else remLeaveLog(crewId,date);
-  // Fix the schedule status for that date
+  await saveToCloud();
+  // Also fix the schedule for that date if the status still shows OT/leave
   const d=parseLocalDate(date),s=getSch(d);
   if(type==='ot'){
+    // downgrade OT status to duty on that date for this crew
     const inM=s.morning.find(e=>e.id===crewId&&e.status==='ot');
     const inE=s.evening.find(e=>e.id===crewId&&e.status==='ot');
     if(inM) inM.status='duty';
     if(inE) inE.status='duty';
-  }else{
+  } else {
+    // remove from leave in off list and put back as unassigned
     const inO=s.off.find(e=>e.id===crewId&&e.status==='leave');
     if(inO) inO.status='off';
   }
-  await saveToCloud(); // single save covering both log + schedule fix
+  await saveToCloud();
+  // Refresh the modal
   openHistModal(type,crewId);
   renderToday();renderOT();renderLeave();
 }
@@ -1043,9 +1037,7 @@ async function deleteHistEntry(type,crewId,date,shift){
 let userIP='Unknown';
 async function fetchIP(){
   try{
-    const controller=new AbortController();
-    setTimeout(()=>controller.abort(),3000); // 3 sec max
-    const r=await fetch('https://api.ipify.org?format=json',{signal:controller.signal});
+    const r=await fetch('https://api.ipify.org?format=json');
     const d=await r.json();
     userIP=d.ip||'Unknown';
   }catch{userIP='Unknown';}
@@ -1065,7 +1057,6 @@ function logActivity(action){
 }
 
 function renderActivityLog(){
-  if(isAdmin) renderBlockedList(); // only refresh block list when admin is viewing
   const el=document.getElementById('activityList');
   if(!activityLog.length){
     el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text2);"><div style="font-size:32px;margin-bottom:8px;">📋</div><div style="font-size:14px;font-weight:500;">No activity recorded yet</div></div>';
@@ -1157,14 +1148,10 @@ function setReqCooldown(crewId){
 // Input sanitizer — strip HTML/script injection attempts
 function sanitize(str){return String(str||'').replace(/[<>"'`\\]/g,'').trim().substring(0,300);}
 
-// ─── OWNER CONFIG ─────────────────────────────────────────
-const OWNER_EMP_ID='10024456'; // Buvanesh Kanth S — always bypasses OTP
-// OTP state
-let pendingOTP=null; // {code, empId, expires}
-let pendingLoginCrew=null;
-
+// ─── OWNER & OTP CONFIG ───────────────────────────────────
+const OWNER_EMP_ID='10024456'; // Buvanesh Kanth S — bypasses OTP
+let pendingOTP=null,pendingLoginCrew=null;
 function generateOTP(){return Math.floor(100000+Math.random()*900000).toString();}
-
 function showLoginStep(step){
   document.getElementById('loginStep1').style.display=step===1?'':'none';
   document.getElementById('loginStep2').style.display=step===2?'':'none';
@@ -1175,15 +1162,12 @@ async function doLogin(){
   if(!checkAdminRate()) return;
   const empIdInput=document.getElementById('loginEmpId').value.trim();
   const empIdErr=document.getElementById('empIdError');
-  const matchedCrew=crewByEmpId(empIdInput);
-
-  // Check if blocked
   if(blockedIds.includes(empIdInput)){
     showLoginStep('blocked');
     tgAlert(`🚫 *Blocked user attempted login*\nEmployee ID: ${empIdInput}\nIP: ${userIP}`);
     return;
   }
-
+  const matchedCrew=crewByEmpId(empIdInput);
   if(!matchedCrew){
     empIdErr.textContent='Invalid Employee ID. Only ARFF crew members can login.';
     empIdErr.style.display='block';
@@ -1191,7 +1175,6 @@ async function doLogin(){
     return;
   }
   empIdErr.style.display='none';
-
   const pw=document.getElementById('pwInput').value;
   const hash=await sha256(pw);
   if(hash!==ADMIN_HASH){
@@ -1202,32 +1185,22 @@ async function doLogin(){
     return;
   }
   document.getElementById('pwError').style.display='none';
-
-  // Owner (Buvanesh) logs in directly — no OTP needed
-  if(empIdInput===OWNER_EMP_ID){
-    await completeLogin(matchedCrew);
-    return;
-  }
-
-  // All others — send OTP to owner's Telegram for approval
+  if(empIdInput===OWNER_EMP_ID){await completeLogin(matchedCrew);return;}
+  // Others — generate OTP, show step 2 immediately (don't await Telegram)
   pendingLoginCrew=matchedCrew;
   const code=generateOTP();
   pendingOTP={code,empId:empIdInput,expires:Date.now()+300000};
-  // Show OTP screen IMMEDIATELY — don't wait for Telegram
   showLoginStep(2);
-  // Send Telegram alert in background
   tgAlert(
     `🔔 *Admin access requested!*\n\nEmployee: ${matchedCrew.name}\nID: ${matchedCrew.empId}\nIP: ${userIP}\n\n` +
-    `━━━━━━━━━━━━━━\n` +
-    `✅ *Approval code: \`${code}\`*\n` +
-    `━━━━━━━━━━━━━━\n\n` +
-    `Share this code with them to allow login.\nCode expires in 5 minutes.\n\n` +
-    `⛔ To block this user permanently, go to Activity log → Block user.`
+    `━━━━━━━━━━━━━━\n✅ *Approval code: \`${code}\`*\n━━━━━━━━━━━━━━\n\n` +
+    `Share this code with them.\nExpires in 5 minutes.\n\n` +
+    `⛔ To block: Activity log → Block user.`
   );
 }
 
 function cancelOTP(){
-  pendingOTP=null; pendingLoginCrew=null;
+  pendingOTP=null;pendingLoginCrew=null;
   showLoginStep(1);
   document.getElementById('otpInput').value='';
   document.getElementById('otpError').style.display='none';
@@ -1250,26 +1223,51 @@ async function verifyOTP(){
     otpErr.style.display='block';
     return;
   }
-  otpErr.style.display='none';
   await completeLogin(pendingLoginCrew);
-  pendingOTP=null; pendingLoginCrew=null;
+  pendingOTP=null;pendingLoginCrew=null;
 }
 
 async function completeLogin(crew){
-  isAdmin=true; adminUser=crew; adminAttempts=0; // set adminUser FIRST
+  isAdmin=true; adminUser=crew; adminAttempts=0;
   closeModal('loginModal');
   showLoginStep(1);
   document.getElementById('adminBar').style.display='flex';
   document.getElementById('loginBtn').style.display='none';
   document.getElementById('loginEmpId').value='';
   document.getElementById('pwInput').value='';
-  document.getElementById('otpInput').value='';
+  const oi=document.getElementById('otpInput'); if(oi) oi.value='';
   document.getElementById('tab-btn-activity').style.display='';
   resetInactivityTimer();
-  logActivity('Logged in as admin'); // now adminUser is set, log works correctly
+  logActivity('Logged in as admin');
   await saveToCloud();
   renderToday();renderCrew();renderBlockedList();
   tgAlert(`🔐 *Admin login successful*\nEmployee: ${crew.name} (${crew.empId})\nIP: ${userIP}`);
+}
+
+  empIdErr.style.display='none';
+  // Validate password
+  const pw=document.getElementById('pwInput').value;
+  const hash=await sha256(pw);
+  if(hash===ADMIN_HASH){
+    isAdmin=true; adminUser=matchedCrew; adminAttempts=0;
+    closeModal('loginModal');
+    document.getElementById('adminBar').style.display='flex';
+    document.getElementById('loginBtn').style.display='none';
+    document.getElementById('loginEmpId').value='';
+    document.getElementById('pwInput').value='';
+    document.getElementById('pwError').style.display='none';
+    document.getElementById('tab-btn-activity').style.display='';
+    resetInactivityTimer();
+    logActivity('Logged in as admin');
+    await saveToCloud();
+    renderToday();renderCrew();
+    tgAlert(`🔐 *Admin logged in*\nEmployee: ${matchedCrew.name}\nID: ${matchedCrew.empId}\nIP: ${userIP}`);
+  }else{
+    recordAdminFail();
+    document.getElementById('pwError').textContent='Incorrect password.';
+    document.getElementById('pwError').style.display='block';
+    tgAlert(`⚠️ *Wrong password attempt*\nEmployee: ${matchedCrew.name} (${empIdInput})\nIP: ${userIP}\nFailed attempts: ${adminAttempts}`);
+  }
 }
 
 function doLogout(){
@@ -1284,15 +1282,51 @@ function doLogout(){
   renderToday();renderOT();renderLeave();
 }
 
-// ─── BLOCK MANAGEMENT ─────────────────────────────────────
+// ─── IP FETCH ─────────────────────────────────────────────
+let userIP='Unknown';
 
+
+// ─── ACTIVITY LOG ─────────────────────────────────────────
+function logActivity(action){
+  if(!adminUser) return;
+  activityLog.unshift({empId:adminUser.empId,name:adminUser.name,action,ip:userIP,time:new Date().toISOString()});
+  if(activityLog.length>200) activityLog=activityLog.slice(0,200);
+}
+
+function renderActivityLog(){
+  if(isAdmin) renderBlockedList();
+  const el=document.getElementById('activityList');
+  if(!activityLog.length){
+    el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text2);"><div style="font-size:32px;margin-bottom:8px;">📋</div><div style="font-size:14px;font-weight:500;">No activity recorded yet</div></div>';
+    return;
+  }
+  el.innerHTML=activityLog.map(e=>{
+    const t=new Date(e.time).toLocaleString('en-IN',{timeZone:'Asia/Kolkata',day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',hour12:true});
+    const crew=CREW.find(c=>c.empId===e.empId);
+    return`<div style="display:flex;align-items:flex-start;gap:12px;padding:12px;border-radius:10px;background:var(--surface);border:1px solid var(--border);margin-bottom:8px;">
+      <div class="avatar av-${crew?crew.color:0}" style="flex-shrink:0;">${(e.name||'').split(' ').map(w=>w[0]).slice(0,2).join('').toUpperCase()}</div>
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:13px;font-weight:600;">${e.name} <span style="font-weight:400;color:var(--text2);font-size:11px;">${e.empId}</span></div>
+        <div style="font-size:12px;color:var(--text2);margin-top:2px;">${e.action}</div>
+        <div style="font-size:10px;color:var(--text3);margin-top:4px;">🕐 ${t} &nbsp;·&nbsp; 🌐 ${e.ip}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function clearActivityLog(){
+  if(!confirm('Clear all activity logs? This cannot be undone.'))return;
+  activityLog=[];
+  await saveToCloud();
+  renderActivityLog();
+}
+
+// ─── BLOCK MANAGEMENT ─────────────────────────────────────
 function renderBlockedList(){
   const el=document.getElementById('blockedList');
   const sel=document.getElementById('blockEmpSelect');
   if(!el||!sel) return;
-  // Populate dropdown with non-owner, non-blocked crew
-  sel.innerHTML=CREW
-    .filter(c=>c.empId!==OWNER_EMP_ID&&!blockedIds.includes(c.empId))
+  sel.innerHTML=CREW.filter(c=>c.empId!==OWNER_EMP_ID&&!blockedIds.includes(c.empId))
     .map(c=>`<option value="${c.empId}">${c.name} (${c.empId})</option>`).join('');
   if(!blockedIds.length){
     el.innerHTML='<div style="font-size:12px;color:var(--text2);margin-bottom:8px;">No users blocked.</div>';
@@ -1313,7 +1347,9 @@ async function blockEmployee(){
   if(!blockedIds.includes(eid)) blockedIds.push(eid);
   const c=CREW.find(x=>x.empId===eid);
   logActivity(`Blocked ${c?c.name:eid} (${eid}) from admin access`);
-  tgAlert(`🚫 *User blocked*\nBy: ${adminUser?adminUser.name:'Admin'}\nBlocked: ${c?c.name:eid} (${eid})`);
+  tgAlert(`🚫 *User blocked*
+By: ${adminUser?adminUser.name:'Admin'}
+Blocked: ${c?c.name:eid} (${eid})`);
   await sbSet('blockedIds',blockedIds);
   renderBlockedList();
 }
@@ -1322,7 +1358,9 @@ async function unblockEmployee(eid){
   blockedIds=blockedIds.filter(x=>x!==eid);
   const c=CREW.find(x=>x.empId===eid);
   logActivity(`Unblocked ${c?c.name:eid} (${eid})`);
-  tgAlert(`✅ *User unblocked*\nBy: ${adminUser?adminUser.name:'Admin'}\nUnblocked: ${c?c.name:eid} (${eid})`);
+  tgAlert(`✅ *User unblocked*
+By: ${adminUser?adminUser.name:'Admin'}
+Unblocked: ${c?c.name:eid} (${eid})`);
   await sbSet('blockedIds',blockedIds);
   renderBlockedList();
 }
@@ -1437,14 +1475,12 @@ function refreshAll(){
 
 // BOOT
 (async()=>{
-  // Load cloud data first — don't wait for IP
   await loadFromCloud();
+  fetchIP();
   document.getElementById('loadingScreen').style.display='none';
   document.getElementById('mainApp').style.display='';
   startRealtime();
   refreshAll();
-  // Fetch IP quietly in background — never blocks startup
-  fetchIP();
 })();
 </script>
 </body>
