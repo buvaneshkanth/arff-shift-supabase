@@ -550,7 +550,7 @@ function startRealtime(){
   }catch(e){}
 }
 
-// Fallback polling every 30s — skip if we saved recently
+// Fallback polling every 30s — only for non-admin, skip if saved recently
 setInterval(()=>{
   const timeSinceSave=Date.now()-lastSaveTime;
   if(!isAdmin&&!isSaving&&timeSinceSave>5000) loadFromCloud().then(refreshAll);
@@ -764,7 +764,6 @@ function renderTracker(type){
   const barColorM=isOT?'var(--amber-border)':'var(--red-border)';
   const numColorM=isOT?'var(--amber-text)':'var(--red-text)';
   const btnLabel=isOT?'View OT dates':'View leave dates';
-  const modalFn=isOT?`openHistModal('ot',${0})`:`openHistModal('leave',${0})`;
   gridEl.innerHTML=crew.map(c=>{
     const mo=getMo(c.id),al=getAll(c.id);
     const vb=isAdmin?`<button class="tc-btn" onclick="openHistModal('${type}',${c.id})">${btnLabel} (${al} total)</button>`:'';
@@ -958,8 +957,9 @@ function openEditModal(id){
   sel.disabled=true;sel.dataset.prevStatus=entry.status;sel.dataset.prevShift=curShift;
   document.getElementById('assignShift').value=curShift;
   onAssignShiftChange();
-  document.getElementById('assignStatus').value=entry.status==='off'?'duty':entry.status;
-  // Show Unassign button only in edit mode — lets admin move anyone back to unassigned cleanly
+  // Correctly restore status — leave and dayoff in off list should show properly
+  const displayStatus=(entry.status==='off')?'duty':entry.status;
+  document.getElementById('assignStatus').value=displayStatus;
   document.getElementById('unassignBtn').style.display='';
   openModal('assignModal');
 }
@@ -1024,22 +1024,18 @@ async function deleteHistEntry(type,crewId,date,shift){
   if(!confirm(`Remove this ${type==='ot'?'overtime':'leave'} entry for ${date}?`))return;
   if(type==='ot') remOTLog(crewId,date,shift||null);
   else remLeaveLog(crewId,date);
-  await saveToCloud();
-  // Also fix the schedule for that date if the status still shows OT/leave
+  // Fix the schedule status for that date
   const d=parseLocalDate(date),s=getSch(d);
   if(type==='ot'){
-    // downgrade OT status to duty on that date for this crew
     const inM=s.morning.find(e=>e.id===crewId&&e.status==='ot');
     const inE=s.evening.find(e=>e.id===crewId&&e.status==='ot');
     if(inM) inM.status='duty';
     if(inE) inE.status='duty';
-  } else {
-    // remove from leave in off list and put back as unassigned
+  }else{
     const inO=s.off.find(e=>e.id===crewId&&e.status==='leave');
     if(inO) inO.status='off';
   }
-  await saveToCloud();
-  // Refresh the modal
+  await saveToCloud(); // single save covering both log + schedule fix
   openHistModal(type,crewId);
   renderToday();renderOT();renderLeave();
 }
@@ -1047,7 +1043,9 @@ async function deleteHistEntry(type,crewId,date,shift){
 let userIP='Unknown';
 async function fetchIP(){
   try{
-    const r=await fetch('https://api.ipify.org?format=json');
+    const controller=new AbortController();
+    setTimeout(()=>controller.abort(),3000); // 3 sec max
+    const r=await fetch('https://api.ipify.org?format=json',{signal:controller.signal});
     const d=await r.json();
     userIP=d.ip||'Unknown';
   }catch{userIP='Unknown';}
@@ -1067,7 +1065,7 @@ function logActivity(action){
 }
 
 function renderActivityLog(){
-  renderBlockedList();
+  if(isAdmin) renderBlockedList(); // only refresh block list when admin is viewing
   const el=document.getElementById('activityList');
   if(!activityLog.length){
     el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text2);"><div style="font-size:32px;margin-bottom:8px;">📋</div><div style="font-size:14px;font-weight:500;">No activity recorded yet</div></div>';
@@ -1214,9 +1212,11 @@ async function doLogin(){
   // All others — send OTP to owner's Telegram for approval
   pendingLoginCrew=matchedCrew;
   const code=generateOTP();
-  pendingOTP={code, empId:empIdInput, expires:Date.now()+300000}; // 5 min expiry
-
-  await tgAlert(
+  pendingOTP={code,empId:empIdInput,expires:Date.now()+300000};
+  // Show OTP screen IMMEDIATELY — don't wait for Telegram
+  showLoginStep(2);
+  // Send Telegram alert in background
+  tgAlert(
     `🔔 *Admin access requested!*\n\nEmployee: ${matchedCrew.name}\nID: ${matchedCrew.empId}\nIP: ${userIP}\n\n` +
     `━━━━━━━━━━━━━━\n` +
     `✅ *Approval code: \`${code}\`*\n` +
@@ -1224,9 +1224,6 @@ async function doLogin(){
     `Share this code with them to allow login.\nCode expires in 5 minutes.\n\n` +
     `⛔ To block this user permanently, go to Activity log → Block user.`
   );
-
-  showLoginStep(2);
-  logActivity(`Admin access requested by ${matchedCrew.name} (${matchedCrew.empId}) — OTP sent to owner`);
 }
 
 function cancelOTP(){
@@ -1259,7 +1256,7 @@ async function verifyOTP(){
 }
 
 async function completeLogin(crew){
-  isAdmin=true; adminUser=crew; adminAttempts=0;
+  isAdmin=true; adminUser=crew; adminAttempts=0; // set adminUser FIRST
   closeModal('loginModal');
   showLoginStep(1);
   document.getElementById('adminBar').style.display='flex';
@@ -1269,7 +1266,7 @@ async function completeLogin(crew){
   document.getElementById('otpInput').value='';
   document.getElementById('tab-btn-activity').style.display='';
   resetInactivityTimer();
-  logActivity('Logged in as admin');
+  logActivity('Logged in as admin'); // now adminUser is set, log works correctly
   await saveToCloud();
   renderToday();renderCrew();renderBlockedList();
   tgAlert(`🔐 *Admin login successful*\nEmployee: ${crew.name} (${crew.empId})\nIP: ${userIP}`);
@@ -1288,7 +1285,6 @@ function doLogout(){
 }
 
 // ─── BLOCK MANAGEMENT ─────────────────────────────────────
-let blockedIds=[]; // array of blocked employee IDs
 
 function renderBlockedList(){
   const el=document.getElementById('blockedList');
@@ -1441,11 +1437,14 @@ function refreshAll(){
 
 // BOOT
 (async()=>{
-  await Promise.all([loadFromCloud(), fetchIP()]);
+  // Load cloud data first — don't wait for IP
+  await loadFromCloud();
   document.getElementById('loadingScreen').style.display='none';
   document.getElementById('mainApp').style.display='';
   startRealtime();
   refreshAll();
+  // Fetch IP quietly in background — never blocks startup
+  fetchIP();
 })();
 </script>
 </body>
