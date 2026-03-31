@@ -192,6 +192,7 @@ textarea.fi{resize:vertical;min-height:72px;}
   <div class="admin-bar" id="adminBar">
     <div class="admin-dot"></div>
     <span>Admin mode active — approve requests &amp; finalize allocations</span>
+    <button class="btn btn-sm" style="background:var(--blue-bg);color:var(--blue-text);border-color:var(--blue-border);" onclick="testTelegram()">Test alert</button>
     <button class="btn btn-red btn-sm" onclick="doLogout()">Logout</button>
   </div>
 
@@ -210,6 +211,7 @@ textarea.fi{resize:vertical;min-height:72px;}
     <button class="tab"        id="tab-btn-ot"       onclick="openTab('ot')">Overtime tracker</button>
     <button class="tab"        id="tab-btn-leave"    onclick="openTab('leave')">Leave tracker</button>
     <button class="tab"        id="tab-btn-crew"     onclick="openTab('crew')">Crew directory</button>
+    <button class="tab"        id="tab-btn-activity" onclick="openTab('activity')" style="display:none">Activity log</button>
     <button class="tab"        id="tab-btn-portal"   onclick="openTab('portal')">My shift</button>
   </div>
 
@@ -266,6 +268,14 @@ textarea.fi{resize:vertical;min-height:72px;}
     <div class="tracker-grid" id="leaveGrid"></div>
   </div>
 
+  <div id="pane-activity" style="display:none">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:18px;">
+      <div><div style="font-size:15px;font-weight:600;">Activity log</div><div style="font-size:12px;color:var(--text2);margin-top:2px;">All admin actions with employee ID and timestamp</div></div>
+      <button class="btn btn-red btn-sm" onclick="clearActivityLog()">Clear log</button>
+    </div>
+    <div id="activityList"></div>
+  </div>
+
   <div id="pane-crew" style="display:none">
     <input class="crew-search" type="text" placeholder="Search name, ID, email, phone..." id="crewSearch" oninput="renderCrew()">
     <div id="crewTable"></div>
@@ -287,6 +297,8 @@ textarea.fi{resize:vertical;min-height:72px;}
 <!-- MODALS -->
 <div class="overlay" id="loginModal"><div class="modal">
   <h2>Admin login</h2>
+  <div style="background:var(--surface2);border-radius:var(--r);padding:10px 14px;margin-bottom:16px;font-size:12px;color:var(--text2);">Only authorised ARFF crew members can access admin mode.</div>
+  <div class="fg"><label class="fl">Employee ID</label><input type="text" class="fi" id="loginEmpId" placeholder="Enter your Employee ID" maxlength="10" onkeydown="if(event.key==='Enter')document.getElementById('pwInput').focus()"><div class="errmsg" id="empIdError" style="display:none">Invalid Employee ID. Only ARFF crew members can login.</div></div>
   <div class="fg"><label class="fl">Password</label><input type="password" class="fi" id="pwInput" placeholder="Enter admin password" onkeydown="if(event.key==='Enter')doLogin()"><div class="errmsg" id="pwError" style="display:none">Incorrect password.</div></div>
   <div class="mactions"><button class="btn" onclick="closeModal('loginModal')">Cancel</button><button class="btn btn-navy" onclick="doLogin()">Login</button></div>
 </div></div>
@@ -395,7 +407,8 @@ CREW.forEach((c,i)=>{c.color=i%4;c.initials=c.name.split(' ').map(w=>w[0]).slice
 
 let isAdmin=false,currentDate=new Date(),calViewDate,portalCrewId=null,isSaving=false,activeTab='today';
 currentDate.setHours(0,0,0,0); calViewDate=new Date(currentDate);
-let scheduleData={},pendingRequests=[],otLog={},leaveLog={};
+let scheduleData={},pendingRequests=[],otLog={},leaveLog={},activityLog=[];
+let adminUser=null; // stores the crew member who is currently logged in as admin
 
 // ─── SUPABASE SYNC ────────────────────────────────────────
 function setSyncState(s,m){document.getElementById('syncDot').className='sync-dot '+s;document.getElementById('syncMsg').textContent=m;}
@@ -445,13 +458,14 @@ async function sbSet(key,value){
 async function loadFromCloud(){
   setSyncState('syncing','Loading...');
   try{
-    const [sd,pr,ol,ll]=await Promise.all([
-      sbGet('scheduleData'),sbGet('pendingRequests'),sbGet('otLog'),sbGet('leaveLog')
+    const [sd,pr,ol,ll,al]=await Promise.all([
+      sbGet('scheduleData'),sbGet('pendingRequests'),sbGet('otLog'),sbGet('leaveLog'),sbGet('activityLog')
     ]);
     scheduleData   =sd||{};
     pendingRequests=pr||[];
     otLog          =ol||{};
     leaveLog       =ll||{};
+    activityLog    =al||[];
 
     // DATA GUARD: strip stale pre-assigned default shifts from old version
     const oldM=[1,2,3,4,5,6,7,8],oldE=[9,10,11,12,13,14,15,16];
@@ -482,6 +496,7 @@ async function saveToCloud(){
     await sbSet('pendingRequests',pendingRequests);
     await sbSet('otLog',otLog);
     await sbSet('leaveLog',leaveLog);
+    await sbSet('activityLog',activityLog);
     lastSaveTime=Date.now(); // update after all saves complete
     setSyncState('ok','Saved: '+new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}));
   }catch(e){
@@ -680,7 +695,8 @@ async function approveReq(i){
   }
   const tl={shift:'Shift change',leave:'Leave',ot:'Overtime'};
   const aC=crewById(r.crewId);
-  tgAlert(`✅ *Request approved*\nEmployee: ${aC.name} (${aC.empId})\nType: ${tl[r.type]||r.type}\nDate: ${r.date}${r.note?'\nNote: '+r.note:''}`);
+  logActivity(`Approved ${tl[r.type]||r.type} request for ${aC.name} (${aC.empId}) on ${r.date}`);
+  tgAlert(`✅ *Request approved*\nBy: ${adminUser?adminUser.name:'Admin'}\nEmployee: ${aC.name} (${aC.empId})\nType: ${tl[r.type]||r.type} | Date: ${r.date}${r.note?'\nNote: '+r.note:''}\nIP: ${userIP}`);
   pendingRequests.splice(i,1);
   await saveToCloud();renderRequests();renderToday();renderOT();renderLeave();
 }
@@ -688,7 +704,8 @@ async function rejectReq(i){
   const r=pendingRequests[i];
   const tl={shift:'Shift change',leave:'Leave',ot:'Overtime'};
   const rC=crewById(r.crewId);
-  tgAlert(`❌ *Request rejected*\nEmployee: ${rC.name} (${rC.empId})\nType: ${tl[r.type]||r.type}\nDate: ${r.date}`);
+  logActivity(`Rejected ${tl[r.type]||r.type} request for ${rC.name} (${rC.empId}) on ${r.date}`);
+  tgAlert(`❌ *Request rejected*\nBy: ${adminUser?adminUser.name:'Admin'}\nEmployee: ${rC.name} (${rC.empId})\nType: ${tl[r.type]||r.type} | Date: ${r.date}\nIP: ${userIP}`);
   pendingRequests.splice(i,1);await saveToCloud();renderRequests();renderSummary();
 }
 
@@ -961,7 +978,8 @@ async function saveAssign(){
   const aC=crewById(personId);
   const sLbl=shift==='none'?'None':shift==='morning'?'Morning':'Evening';
   const stLbl={'duty':'On duty','leave':'On leave','ot':'Overtime','dayoff':'Day off'}[status]||status;
-  tgAlert(`📋 *Shift assigned*\nEmployee: ${aC.name} (${aC.empId})\nShift: ${sLbl}\nStatus: ${stLbl}\nDate: ${dk}`);
+  logActivity(`Assigned ${aC.name} (${aC.empId}) → ${sLbl}, ${stLbl} on ${dk}`);
+  tgAlert(`📋 *Shift assigned*\nBy: ${adminUser?adminUser.name:'Admin'} (${adminUser?adminUser.empId:''})\nEmployee: ${aC.name} (${aC.empId})\nShift: ${sLbl} | Status: ${stLbl}\nDate: ${dk} | IP: ${userIP}`);
   document.getElementById('assignPerson').disabled=false;
   closeModal('assignModal');await saveToCloud();renderToday();renderOT();renderLeave();
 }
@@ -976,7 +994,8 @@ async function unassignCrew(){
   remOTLog(personId,dk,null);
   remLeaveLog(personId,dk);
   const uC=crewById(personId);
-  tgAlert(`↩️ *Crew unassigned*\nEmployee: ${uC.name} (${uC.empId})\nDate: ${dk}\nMoved back to unassigned.`);
+  logActivity(`Unassigned ${uC.name} (${uC.empId}) on ${dk}`);
+  tgAlert(`↩️ *Crew unassigned*\nBy: ${adminUser?adminUser.name:'Admin'}\nEmployee: ${uC.name} (${uC.empId})\nDate: ${dk} | IP: ${userIP}`);
   document.getElementById('assignPerson').disabled=false;
   closeModal('assignModal');await saveToCloud();renderToday();renderOT();renderLeave();
 }
@@ -1005,7 +1024,54 @@ async function deleteHistEntry(type,crewId,date,shift){
   openHistModal(type,crewId);
   renderToday();renderOT();renderLeave();
 }
-// ─── SECURITY ─────────────────────────────────────────────
+// ─── IP & ACTIVITY LOG ────────────────────────────────────
+let userIP='Unknown';
+async function fetchIP(){
+  try{
+    const r=await fetch('https://api.ipify.org?format=json');
+    const d=await r.json();
+    userIP=d.ip||'Unknown';
+  }catch{userIP='Unknown';}
+}
+
+function logActivity(action){
+  if(!adminUser) return;
+  const entry={
+    empId:adminUser.empId,
+    name:adminUser.name,
+    action,
+    ip:userIP,
+    time:new Date().toISOString()
+  };
+  activityLog.unshift(entry); // newest first
+  if(activityLog.length>200) activityLog=activityLog.slice(0,200); // keep last 200
+}
+
+function renderActivityLog(){
+  const el=document.getElementById('activityList');
+  if(!activityLog.length){
+    el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text2);"><div style="font-size:32px;margin-bottom:8px;">📋</div><div style="font-size:14px;font-weight:500;">No activity recorded yet</div></div>';
+    return;
+  }
+  el.innerHTML=activityLog.map(e=>{
+    const t=new Date(e.time).toLocaleString('en-IN',{timeZone:'Asia/Kolkata',day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',hour12:true});
+    return`<div style="display:flex;align-items:flex-start;gap:12px;padding:12px;border-radius:10px;background:var(--surface);border:1px solid var(--border);margin-bottom:8px;">
+      <div class="avatar av-${CREW.find(c=>c.empId===e.empId)?.color||0}" style="flex-shrink:0;">${(e.name||'').split(' ').map(w=>w[0]).slice(0,2).join('').toUpperCase()}</div>
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:13px;font-weight:600;">${e.name} <span style="font-weight:400;color:var(--text2);font-size:11px;">${e.empId}</span></div>
+        <div style="font-size:12px;color:var(--text2);margin-top:2px;">${e.action}</div>
+        <div style="font-size:10px;color:var(--text3);margin-top:4px;">🕐 ${t} &nbsp;·&nbsp; 🌐 ${e.ip}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function clearActivityLog(){
+  if(!confirm('Clear all activity logs? This cannot be undone.'))return;
+  activityLog=[];
+  await saveToCloud();
+  renderActivityLog();
+}
 // SHA-256 of 'Admin@2026#' — so plain password never sits in a comparison
 const ADMIN_HASH='12bcb5941865513c77c73ce4d0e0c7ab9a325527edc7e457f8cdf03a15762bb2';
 
@@ -1048,48 +1114,78 @@ function recordEmpIdFail(eid){
 }
 function clearEmpIdFail(eid){if(empIdFails[eid.trim()])empIdFails[eid.trim()].n=0;}
 
-// Request cooldown — 1 submission per employee per hour
+// Request cooldown — 5 submissions per employee per hour
 const reqCooldown={};
+const REQ_LIMIT=5;
 function checkReqCooldown(crewId){
   const now=Date.now();
-  if(reqCooldown[crewId]&&now<reqCooldown[crewId]){
-    const mins=Math.ceil((reqCooldown[crewId]-now)/60000);
-    alert(`You already submitted a request recently. Please wait ${mins} more minute(s) before submitting again.`);
+  if(!reqCooldown[crewId]) reqCooldown[crewId]={count:0,windowStart:now};
+  // Reset window if 1 hour has passed
+  if(now-reqCooldown[crewId].windowStart>3600000){
+    reqCooldown[crewId]={count:0,windowStart:now};
+  }
+  if(reqCooldown[crewId].count>=REQ_LIMIT){
+    const minsLeft=Math.ceil((3600000-(now-reqCooldown[crewId].windowStart))/60000);
+    alert(`You have reached the limit of ${REQ_LIMIT} requests per hour. Please try again in ${minsLeft} minute(s).`);
     return false;
   }
   return true;
 }
-function setReqCooldown(crewId){reqCooldown[crewId]=Date.now()+3600000;}
+function setReqCooldown(crewId){
+  if(!reqCooldown[crewId]) reqCooldown[crewId]={count:0,windowStart:Date.now()};
+  reqCooldown[crewId].count++;
+}
 
 // Input sanitizer — strip HTML/script injection attempts
 function sanitize(str){return String(str||'').replace(/[<>"'`\\]/g,'').trim().substring(0,300);}
 
 async function doLogin(){
   if(!checkAdminRate()) return;
+  // Validate Employee ID — must belong to ARFF crew
+  const empIdInput=document.getElementById('loginEmpId').value.trim();
+  const empIdErr=document.getElementById('empIdError');
+  const matchedCrew=crewByEmpId(empIdInput);
+  if(!matchedCrew){
+    empIdErr.style.display='block';
+    document.getElementById('pwError').style.display='none';
+    tgAlert(`🚨 *Unauthorised login attempt*\nInvalid Employee ID: \`${empIdInput||'(blank)'}\`\nIP: ${userIP}`);
+    return;
+  }
+  empIdErr.style.display='none';
+  // Validate password
   const pw=document.getElementById('pwInput').value;
   const hash=await sha256(pw);
   if(hash===ADMIN_HASH){
-    isAdmin=true;adminAttempts=0;closeModal('loginModal');
+    isAdmin=true; adminUser=matchedCrew; adminAttempts=0;
+    closeModal('loginModal');
     document.getElementById('adminBar').style.display='flex';
     document.getElementById('loginBtn').style.display='none';
+    document.getElementById('loginEmpId').value='';
     document.getElementById('pwInput').value='';
     document.getElementById('pwError').style.display='none';
-    renderToday();renderCrew();
+    document.getElementById('tab-btn-activity').style.display='';
     resetInactivityTimer();
-    tgAlert('🔐 *Admin logged in*\nSomeone has logged in as admin on the ARFF Shift Management app.');
+    logActivity('Logged in as admin');
+    await saveToCloud();
+    renderToday();renderCrew();
+    tgAlert(`🔐 *Admin logged in*\nEmployee: ${matchedCrew.name}\nID: ${matchedCrew.empId}\nIP: ${userIP}`);
   }else{
     recordAdminFail();
     document.getElementById('pwError').textContent='Incorrect password.';
     document.getElementById('pwError').style.display='block';
-    tgAlert(`⚠️ *Failed admin login attempt*\nSomeone tried to log in with a wrong password. Total failed attempts: ${adminAttempts}`);
+    tgAlert(`⚠️ *Wrong password attempt*\nEmployee: ${matchedCrew.name} (${empIdInput})\nIP: ${userIP}\nFailed attempts: ${adminAttempts}`);
   }
 }
+
 function doLogout(){
-  tgAlert('🔓 *Admin logged out*\nAdmin session ended on ARFF Shift Management.');
+  if(adminUser) logActivity('Logged out');
+  saveToCloud();
+  tgAlert(`🔓 *Admin logged out*\nEmployee: ${adminUser?adminUser.name+' ('+adminUser.empId+')':'Unknown'}\nIP: ${userIP}`);
   clearTimeout(inactivityTimer);
-  isAdmin=false;
+  isAdmin=false; adminUser=null;
   document.getElementById('adminBar').style.display='none';
   document.getElementById('loginBtn').style.display='';
+  document.getElementById('tab-btn-activity').style.display='none';
   renderToday();renderOT();renderLeave();
 }
 
@@ -1108,7 +1204,7 @@ function tgTime(){
 
 async function tgAlert(msg){
   try{
-    await fetch(TG_URL,{
+    const res=await fetch(TG_URL,{
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({
@@ -1117,21 +1213,57 @@ async function tgAlert(msg){
         parse_mode:'Markdown'
       })
     });
-  }catch(e){} // silent fail — alerts are non-critical
+    const data=await res.json();
+    if(!data.ok){
+      console.error('Telegram error:',data.description);
+      setSyncState('err','Telegram alert failed: '+data.description);
+      setTimeout(()=>setSyncState('ok',''),4000);
+    }
+  }catch(e){
+    console.error('Telegram fetch error:',e.message);
+  }
+}
+
+async function testTelegram(){
+  setSyncState('syncing','Sending test alert to Telegram...');
+  try{
+    const res=await fetch(TG_URL,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        chat_id:TG_CHAT,
+        text:`🚒 *ARFF Shift Management*\n\n🧪 *Test alert*\nThis is a test message to confirm Telegram alerts are working correctly.\n\n🕐 ${tgTime()}`,
+        parse_mode:'Markdown'
+      })
+    });
+    const data=await res.json();
+    if(data.ok){
+      setSyncState('ok','✅ Test alert sent! Check your Telegram.');
+    }else{
+      setSyncState('err','❌ Telegram error: '+data.description);
+      alert('Telegram error: '+data.description+'\n\nPlease check:\n1. You started the bot (@ARFFShiftAlertBot)\n2. Your Chat ID is correct: '+TG_CHAT);
+    }
+  }catch(e){
+    setSyncState('err','❌ Could not reach Telegram. Check internet connection.');
+    alert('Could not reach Telegram. Make sure you have internet and try again.');
+  }
+  setTimeout(()=>setSyncState('ok','Synced'),3000);
 }
 
 // ─── AUTO-LOGOUT (30 min inactivity) ─────────────────────
 let inactivityTimer=null;
-const INACTIVITY_MS=30*60*1000; // 30 minutes
+const INACTIVITY_MS=5*60*1000; // 5 minutes
 
 function resetInactivityTimer(){
   if(!isAdmin) return;
   clearTimeout(inactivityTimer);
   inactivityTimer=setTimeout(()=>{
     if(isAdmin){
-      tgAlert('⚠️ *Auto-logout triggered*\nAdmin session expired after 30 minutes of inactivity.');
+      logActivity('Auto-logged out due to 5 minutes of inactivity');
+      saveToCloud();
+      tgAlert(`⏱️ *Auto-logout triggered*\nEmployee: ${adminUser?adminUser.name+' ('+adminUser.empId+')':'Admin'}\nReason: 5 minutes of inactivity\nIP: ${userIP}`);
       doLogout();
-      alert('You have been automatically logged out due to 30 minutes of inactivity.');
+      alert('You have been automatically logged out due to 5 minutes of inactivity.');
     }
   },INACTIVITY_MS);
 }
@@ -1148,7 +1280,7 @@ document.getElementById('pwInput').addEventListener('keydown',e=>{if(e.key==='En
 // TABS
 function openTab(tab){
   activeTab=tab;
-  ['today','requests','calendar','ot','leave','crew','portal'].forEach(t=>{
+  ['today','requests','calendar','ot','leave','crew','activity','portal'].forEach(t=>{
     document.getElementById('pane-'+t).style.display=t===tab?'':'none';
     const b=document.getElementById('tab-btn-'+t);if(b)b.classList.toggle('active',t===tab);
   });
@@ -1157,12 +1289,17 @@ function openTab(tab){
   if(tab==='ot')renderOT();
   if(tab==='leave')renderLeave();
   if(tab==='requests')renderRequests();
+  if(tab==='activity')renderActivityLog();
 }
-function refreshAll(){renderToday();renderRequests();renderOT();renderLeave();if(activeTab==='crew')renderCrew();}
+function refreshAll(){
+  renderToday();renderRequests();renderOT();renderLeave();
+  if(activeTab==='crew')renderCrew();
+  if(activeTab==='activity')renderActivityLog();
+}
 
 // BOOT
 (async()=>{
-  await loadFromCloud();
+  await Promise.all([loadFromCloud(), fetchIP()]);
   document.getElementById('loadingScreen').style.display='none';
   document.getElementById('mainApp').style.display='';
   startRealtime();
