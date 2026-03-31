@@ -448,60 +448,25 @@ function setSyncState(s,m){document.getElementById('syncDot').className='sync-do
 
 let lastSaveTime=0; // track when we last saved so realtime doesn't overwrite us
 
-async function sbGet(key){
-  try{
-    const r=await fetch(`${TABLE}?key=eq.${encodeURIComponent(key)}&select=value`,{headers:SB_HDR});
-    if(!r.ok)return null;
-    const d=await r.json();
-    return d.length?JSON.parse(d[0].value):null;
-  }catch{return null;}
-}
-
-async function sbSet(key,value){
-  // First try to update existing row (PATCH)
-  const patch=await fetch(`${TABLE}?key=eq.${encodeURIComponent(key)}`,{
-    method:'PATCH',
-    headers:{
-      'Content-Type':'application/json',
-      'apikey':SUPABASE_KEY,
-      'Authorization':'Bearer '+SUPABASE_KEY,
-      'Prefer':'return=minimal'
-    },
-    body:JSON.stringify({value:JSON.stringify(value)})
-  });
-  if(!patch.ok){const e=await patch.text();throw new Error(`PATCH ${patch.status}: ${e}`);}
-  // If no rows were updated (new key), insert instead
-  const check=await fetch(`${TABLE}?key=eq.${encodeURIComponent(key)}&select=key`,{headers:SB_HDR});
-  const rows=await check.json();
-  if(!rows.length){
-    const ins=await fetch(TABLE,{
-      method:'POST',
-      headers:{
-        'Content-Type':'application/json',
-        'apikey':SUPABASE_KEY,
-        'Authorization':'Bearer '+SUPABASE_KEY,
-        'Prefer':'return=minimal'
-      },
-      body:JSON.stringify({key,value:JSON.stringify(value)})
-    });
-    if(!ins.ok){const e=await ins.text();throw new Error(`INSERT ${ins.status}: ${e}`);}
-  }
-}
-
+// Single call — fetch ALL rows at once
 async function loadFromCloud(){
   setSyncState('syncing','Loading...');
   try{
-    const [sd,pr,ol,ll,al,bl]=await Promise.all([
-      sbGet('scheduleData'),sbGet('pendingRequests'),sbGet('otLog'),sbGet('leaveLog'),sbGet('activityLog'),sbGet('blockedIds')
-    ]);
-    scheduleData   =sd||{};
-    pendingRequests=pr||[];
-    otLog          =ol||{};
-    leaveLog       =ll||{};
-    activityLog    =al||[];
-    blockedIds     =bl||[];
-
-    // DATA GUARD: strip stale pre-assigned default shifts from old version
+    const controller=new AbortController();
+    const tid=setTimeout(()=>controller.abort(),8000);
+    const r=await fetch(`${TABLE}?select=key,value`,{headers:SB_HDR,signal:controller.signal});
+    clearTimeout(tid);
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const rows=await r.json();
+    const map={};
+    rows.forEach(row=>{try{map[row.key]=JSON.parse(row.value);}catch{}});
+    scheduleData   =map['scheduleData']   ||{};
+    pendingRequests=map['pendingRequests'] ||[];
+    otLog          =map['otLog']          ||{};
+    leaveLog       =map['leaveLog']       ||{};
+    activityLog    =map['activityLog']    ||[];
+    blockedIds     =map['blockedIds']     ||[];
+    // DATA GUARD: strip stale default shifts
     const oldM=[1,2,3,4,5,6,7,8],oldE=[9,10,11,12,13,14,15,16];
     let dirty=false;
     Object.keys(scheduleData).forEach(k=>{
@@ -515,28 +480,47 @@ async function loadFromCloud(){
       }
     });
     if(dirty) saveToCloud();
-
     setSyncState('ok','Synced: '+new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}));
-  }catch(e){setSyncState('err','Offline — showing last known data');}
+  }catch(e){
+    if(e.name==='AbortError') setSyncState('err','Timed out — check connection');
+    else setSyncState('err','Offline — showing last known data');
+  }
 }
 
+// Single upsert per key using merge-duplicates
+async function sbSet(key,value){
+  const r=await fetch(TABLE,{
+    method:'POST',
+    headers:{
+      'Content-Type':'application/json',
+      'apikey':SUPABASE_KEY,
+      'Authorization':'Bearer '+SUPABASE_KEY,
+      'Prefer':'resolution=merge-duplicates,return=minimal'
+    },
+    body:JSON.stringify({key,value:JSON.stringify(value)})
+  });
+  if(!r.ok){const e=await r.text();throw new Error(`${r.status}: ${e}`);}
+}
+
+// Save all keys in parallel — fast
 async function saveToCloud(){
   if(isSaving)return; isSaving=true;
-  lastSaveTime=Date.now(); // record save time to block realtime overwrites
+  lastSaveTime=Date.now();
   setSyncState('syncing','Saving...');
   try{
-    // Save sequentially — not parallel — to avoid Supabase rate issues
-    await sbSet('scheduleData',scheduleData);
-    await sbSet('pendingRequests',pendingRequests);
-    await sbSet('otLog',otLog);
-    await sbSet('leaveLog',leaveLog);
-    await sbSet('activityLog',activityLog);
-    await sbSet('blockedIds',blockedIds);
-    lastSaveTime=Date.now(); // update after all saves complete
+    await Promise.all([
+      sbSet('scheduleData',scheduleData),
+      sbSet('pendingRequests',pendingRequests),
+      sbSet('otLog',otLog),
+      sbSet('leaveLog',leaveLog),
+      sbSet('activityLog',activityLog),
+      sbSet('blockedIds',blockedIds)
+    ]);
+    lastSaveTime=Date.now();
     setSyncState('ok','Saved: '+new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}));
   }catch(e){
     console.error('Save error:',e.message);
-    setSyncState('err','Save failed: '+e.message.substring(0,60));
+    setSyncState('err','Save failed: '+e.message.substring(0,50));
   }
   isSaving=false;
 }
