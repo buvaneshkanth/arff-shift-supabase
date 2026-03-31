@@ -678,10 +678,19 @@ async function approveReq(i){
   }else if(r.type==='shift'){
     if(r.shift==='morning')s.morning.push({id:r.crewId,status:'duty'});else s.evening.push({id:r.crewId,status:'duty'});
   }
+  const tl={shift:'Shift change',leave:'Leave',ot:'Overtime'};
+  const aC=crewById(r.crewId);
+  tgAlert(`✅ *Request approved*\nEmployee: ${aC.name} (${aC.empId})\nType: ${tl[r.type]||r.type}\nDate: ${r.date}${r.note?'\nNote: '+r.note:''}`);
   pendingRequests.splice(i,1);
   await saveToCloud();renderRequests();renderToday();renderOT();renderLeave();
 }
-async function rejectReq(i){pendingRequests.splice(i,1);await saveToCloud();renderRequests();renderSummary();}
+async function rejectReq(i){
+  const r=pendingRequests[i];
+  const tl={shift:'Shift change',leave:'Leave',ot:'Overtime'};
+  const rC=crewById(r.crewId);
+  tgAlert(`❌ *Request rejected*\nEmployee: ${rC.name} (${rC.empId})\nType: ${tl[r.type]||r.type}\nDate: ${r.date}`);
+  pendingRequests.splice(i,1);await saveToCloud();renderRequests();renderSummary();
+}
 
 // CALENDAR
 function renderCalendar(){
@@ -949,6 +958,10 @@ async function saveAssign(){
       s.evening.push({id:personId,status});if(status==='leave')addLeaveLog(personId,dk,'(admin assigned)');
     }
   }
+  const aC=crewById(personId);
+  const sLbl=shift==='none'?'None':shift==='morning'?'Morning':'Evening';
+  const stLbl={'duty':'On duty','leave':'On leave','ot':'Overtime','dayoff':'Day off'}[status]||status;
+  tgAlert(`📋 *Shift assigned*\nEmployee: ${aC.name} (${aC.empId})\nShift: ${sLbl}\nStatus: ${stLbl}\nDate: ${dk}`);
   document.getElementById('assignPerson').disabled=false;
   closeModal('assignModal');await saveToCloud();renderToday();renderOT();renderLeave();
 }
@@ -956,13 +969,14 @@ async function saveAssign(){
 async function unassignCrew(){
   const personId=parseInt(document.getElementById('assignPerson').value);
   const dk=dateKey(currentDate),s=getSch(currentDate);
-  // Remove from all shifts and logs for this date
   s.morning=s.morning.filter(e=>e.id!==personId);
   s.evening=s.evening.filter(e=>e.id!==personId);
   s.off=s.off.filter(e=>e.id!==personId);
   s.off.push({id:personId,status:'off'});
   remOTLog(personId,dk,null);
   remLeaveLog(personId,dk);
+  const uC=crewById(personId);
+  tgAlert(`↩️ *Crew unassigned*\nEmployee: ${uC.name} (${uC.empId})\nDate: ${dk}\nMoved back to unassigned.`);
   document.getElementById('assignPerson').disabled=false;
   closeModal('assignModal');await saveToCloud();renderToday();renderOT();renderLeave();
 }
@@ -1061,18 +1075,71 @@ async function doLogin(){
     document.getElementById('pwInput').value='';
     document.getElementById('pwError').style.display='none';
     renderToday();renderCrew();
+    resetInactivityTimer();
+    tgAlert('🔐 *Admin logged in*\nSomeone has logged in as admin on the ARFF Shift Management app.');
   }else{
     recordAdminFail();
     document.getElementById('pwError').textContent='Incorrect password.';
     document.getElementById('pwError').style.display='block';
+    tgAlert(`⚠️ *Failed admin login attempt*\nSomeone tried to log in with a wrong password. Total failed attempts: ${adminAttempts}`);
   }
 }
 function doLogout(){
-  isAdmin=false;document.getElementById('adminBar').style.display='none';document.getElementById('loginBtn').style.display='';
+  tgAlert('🔓 *Admin logged out*\nAdmin session ended on ARFF Shift Management.');
+  clearTimeout(inactivityTimer);
+  isAdmin=false;
+  document.getElementById('adminBar').style.display='none';
+  document.getElementById('loginBtn').style.display='';
   renderToday();renderOT();renderLeave();
 }
 
-// MODALS
+// ─── TELEGRAM ALERTS ──────────────────────────────────────
+const TG_TOKEN='8773957474:AAFDJBs3D2BqyTCk5s-8Y8ytUOE9hyCOhoM';
+const TG_CHAT='5126325376';
+const TG_URL=`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`;
+
+function tgTime(){
+  return new Date().toLocaleString('en-IN',{
+    timeZone:'Asia/Kolkata',
+    day:'2-digit',month:'short',year:'numeric',
+    hour:'2-digit',minute:'2-digit',hour12:true
+  })+' IST';
+}
+
+async function tgAlert(msg){
+  try{
+    await fetch(TG_URL,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        chat_id:TG_CHAT,
+        text:`🚒 *ARFF Shift Management*\n\n${msg}\n\n🕐 ${tgTime()}`,
+        parse_mode:'Markdown'
+      })
+    });
+  }catch(e){} // silent fail — alerts are non-critical
+}
+
+// ─── AUTO-LOGOUT (30 min inactivity) ─────────────────────
+let inactivityTimer=null;
+const INACTIVITY_MS=30*60*1000; // 30 minutes
+
+function resetInactivityTimer(){
+  if(!isAdmin) return;
+  clearTimeout(inactivityTimer);
+  inactivityTimer=setTimeout(()=>{
+    if(isAdmin){
+      tgAlert('⚠️ *Auto-logout triggered*\nAdmin session expired after 30 minutes of inactivity.');
+      doLogout();
+      alert('You have been automatically logged out due to 30 minutes of inactivity.');
+    }
+  },INACTIVITY_MS);
+}
+
+// Track user activity to reset the inactivity timer
+['click','keydown','mousemove','touchstart'].forEach(evt=>{
+  document.addEventListener(evt,()=>{if(isAdmin)resetInactivityTimer();},{passive:true});
+});
 function openModal(id){document.getElementById(id).classList.add('open');}
 function closeModal(id){document.getElementById(id).classList.remove('open');if(id==='assignModal')document.getElementById('assignPerson').disabled=false;}
 document.querySelectorAll('.overlay').forEach(el=>el.addEventListener('click',e=>{if(e.target===el)closeModal(el.id);}));
