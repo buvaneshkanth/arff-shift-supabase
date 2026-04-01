@@ -486,18 +486,24 @@ async function loadFromCloud(){
 }
 
 async function sbSet(key,value){
-  // Use PATCH to update existing row — avoids 409 conflict on duplicate key
-  const r=await fetch(`${TABLE}?key=eq.${encodeURIComponent(key)}`,{
-    method:'PATCH',
-    headers:{
-      'Content-Type':'application/json',
-      'apikey':SUPABASE_KEY,
-      'Authorization':'Bearer '+SUPABASE_KEY,
-      'Prefer':'return=minimal'
-    },
-    body:JSON.stringify({value:JSON.stringify(value)})
+  const encoded=encodeURIComponent(key);
+  const body=JSON.stringify({value:JSON.stringify(value)});
+  const headers={
+    'Content-Type':'application/json',
+    'apikey':SUPABASE_KEY,
+    'Authorization':'Bearer '+SUPABASE_KEY,
+    'Prefer':'return=minimal'
+  };
+  // Always PATCH — row guaranteed to exist (seeded via SQL)
+  const r=await fetch(`${TABLE}?key=eq.${encoded}`,{method:'PATCH',headers,body});
+  if(r.ok||r.status===204) return; // 204 = success no content
+  // If PATCH fails for any reason, try INSERT as fallback
+  const r2=await fetch(TABLE,{
+    method:'POST',
+    headers:{...headers,'Prefer':'resolution=merge-duplicates,return=minimal'},
+    body:JSON.stringify({key,value:JSON.stringify(value)})
   });
-  if(!r.ok){const e=await r.text();throw new Error(r.status+': '+e);}
+  if(!r2.ok){const e=await r2.text();throw new Error(r2.status+': '+e);}
 }
 
 async function saveToCloud(){
