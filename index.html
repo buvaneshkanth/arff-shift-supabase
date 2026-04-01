@@ -250,7 +250,7 @@ textarea.fi{resize:vertical;min-height:72px;}
 
   <div id="pane-ot" style="display:none">
     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:18px;">
-      <div><div style="font-size:15px;font-weight:600;">Overtime tracker</div><div style="font-size:12px;color:var(--text2);margin-top:2px;">Admin: click "View dates" for full OT history per employee</div></div>
+      <div><div style="font-size:15px;font-weight:600;">Overtime tracker</div><div style="font-size:12px;color:var(--text2);margin-top:2px;">Present roster: <strong id="otRosterLabel"></strong> &nbsp;·&nbsp; Admin: click "View dates" for full OT history</div></div>
       <div style="display:flex;gap:8px;">
         <select class="ot-select" id="otFilter" onchange="renderOT()"><option value="all">All crew</option><option value="hasOT">Has OT only</option></select>
         <select class="ot-select" id="otSort" onchange="renderOT()"><option value="name">Sort by name</option><option value="month">Sort by month OT</option><option value="alltime">Sort by all-time OT</option></select>
@@ -382,7 +382,7 @@ textarea.fi{resize:vertical;min-height:72px;}
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;">
     <div class="avatar" id="otHistAv" style="width:38px;height:38px;font-size:12px;flex-shrink:0;"></div>
     <div><h2 style="margin-bottom:0;" id="otHistName"></h2><div style="font-size:12px;color:var(--text2);" id="otHistSub"></div></div>
-    <div style="margin-left:auto;text-align:right;"><div style="font-size:11px;color:var(--text2);">This month</div><div class="mono" style="font-size:20px;color:var(--amber-text);" id="otHistMo">0</div></div>
+    <div style="margin-left:auto;text-align:right;"><div style="font-size:11px;color:var(--text2);">Present roster</div><div class="mono" style="font-size:20px;color:var(--amber-text);" id="otHistMo">0</div></div>
     <div style="text-align:right;padding-left:12px;border-left:1px solid var(--border);"><div style="font-size:11px;color:var(--text2);">All time</div><div class="mono" style="font-size:20px;color:var(--text2);" id="otHistAl">0</div></div>
   </div>
   <div class="filter-row" id="otHistFilters"></div>
@@ -562,9 +562,32 @@ function getSch(d){
   return scheduleData[k];
 }
 
+// ─── ROSTER PERIOD ────────────────────────────────────────
+// Roster anchor: March 15, 2025 — each cycle is 28 days
+const ROSTER_ANCHOR=new Date(2025,2,15); // month is 0-indexed
+function getRosterRange(){
+  const today=new Date();
+  today.setHours(0,0,0,0);
+  const diff=Math.floor((today-ROSTER_ANCHOR)/(86400000));
+  const cycleDay=((diff%28)+28)%28; // position within current 28-day cycle
+  const start=new Date(today); start.setDate(start.getDate()-cycleDay);
+  const end=new Date(start); end.setDate(end.getDate()+27);
+  return{start,end};
+}
+function inCurrentRoster(dateStr){
+  const{start,end}=getRosterRange();
+  const d=parseLocalDate(dateStr);
+  return d>=start&&d<=end;
+}
+function rosterLabel(){
+  const{start,end}=getRosterRange();
+  const fmt=d=>d.toLocaleDateString('en-IN',{day:'numeric',month:'short'});
+  return`${fmt(start)} – ${fmt(end)}`;
+}
+
 // ─── LOGS ─────────────────────────────────────────────────
 const getOTLogs=id=>otLog[id]||[];
-const otMo=id=>getOTLogs(id).filter(l=>l.date.startsWith(curMonthKey())).length;
+const otMo=id=>getOTLogs(id).filter(l=>inCurrentRoster(l.date)).length;
 const otAll=id=>getOTLogs(id).length;
 function addOTLog(id,date,shift,note){
   if(!otLog[id])otLog[id]=[];
@@ -575,7 +598,7 @@ function remOTLog(id,date,shift){
   otLog[id]=otLog[id].filter(l=>!(l.date===date&&(shift===null||l.shift===shift)));
 }
 const getLeaveLogs=id=>leaveLog[id]||[];
-const lvMo=id=>getLeaveLogs(id).filter(l=>l.date.startsWith(curMonthKey())).length;
+const lvMo=id=>getLeaveLogs(id).filter(l=>inCurrentRoster(l.date)).length;
 const lvAll=id=>getLeaveLogs(id).length;
 function addLeaveLog(id,date,note){
   if(!leaveLog[id])leaveLog[id]=[];
@@ -1022,12 +1045,16 @@ function renderTracker(type){
     const vb=isAdmin?`<button class="tc-btn" onclick="openHistModal('${type}',${c.id})">${btnLabel} (${al} total)</button>`:'';
     return`<div class="tracker-card">
       <div class="tc-header"><div class="avatar av-${c.color}" style="width:36px;height:36px;font-size:11px;flex-shrink:0;">${c.initials}</div><div><div class="tc-name">${c.name}</div><div class="tc-empid">${c.empId}</div></div></div>
-      <div class="tc-row"><div class="tc-label">This month</div><div class="tc-bar-wrap"><div class="tc-bar" style="width:${Math.round(mo/maxM*100)}%;background:${barColorM};"></div></div><div class="tc-num" style="color:${numColorM}">${mo}</div></div>
+      <div class="tc-row"><div class="tc-label" style="width:90px;">Present roster</div><div class="tc-bar-wrap"><div class="tc-bar" style="width:${Math.round(mo/maxM*100)}%;background:${barColorM};"></div></div><div class="tc-num" style="color:${numColorM}">${mo}</div></div>
       <div class="tc-row"><div class="tc-label">All time</div><div class="tc-bar-wrap"><div class="tc-bar" style="width:${Math.round(al/maxA*100)}%;background:var(--navy);opacity:.4;"></div></div><div class="tc-num" style="color:var(--text2)">${al}</div></div>
       ${vb}</div>`;
   }).join('');
 }
-function renderOT(){renderTracker('ot');}
+function renderOT(){
+  const el=document.getElementById('otRosterLabel');
+  if(el) el.textContent=rosterLabel();
+  renderTracker('ot');
+}
 function renderLeave(){renderTracker('leave');}
 
 // ─── HISTORY MODAL ────────────────────────────────────────
@@ -1135,7 +1162,7 @@ function portalLookup(){
       </div>
       <div class="status-row"><span style="color:var(--text2);">Today's shift</span><span style="font-weight:600;">${shift}</span></div>
       <div class="status-row"><span style="color:var(--text2);">Status</span>${pill(entry.status)}</div>
-      <div class="status-row"><span style="color:var(--text2);">OT this month</span><span class="mono" style="color:var(--amber-text)">${otMo(c.id)}</span></div>
+      <div class="status-row"><span style="color:var(--text2);">OT this roster</span><span class="mono" style="color:var(--amber-text)">${otMo(c.id)}</span></div>
       <div class="status-row"><span style="color:var(--text2);">OT all time</span><span class="mono" style="color:var(--text2)">${otAll(c.id)}</span></div>
       <div class="status-row"><span style="color:var(--text2);">Leave this month</span><span class="mono" style="color:var(--red-text)">${lvMo(c.id)}</span></div>
       <div class="status-row"><span style="color:var(--text2);">Leave all time</span><span class="mono" style="color:var(--text2)">${lvAll(c.id)}</span></div>
