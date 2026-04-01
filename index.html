@@ -486,10 +486,16 @@ async function loadFromCloud(){
 }
 
 async function sbSet(key,value){
-  const r=await fetch(TABLE,{
-    method:'POST',
-    headers:{...SB_HDR,'Prefer':'resolution=merge-duplicates,return=minimal'},
-    body:JSON.stringify({key,value:JSON.stringify(value)})
+  // Use PATCH to update existing row — avoids 409 conflict on duplicate key
+  const r=await fetch(`${TABLE}?key=eq.${encodeURIComponent(key)}`,{
+    method:'PATCH',
+    headers:{
+      'Content-Type':'application/json',
+      'apikey':SUPABASE_KEY,
+      'Authorization':'Bearer '+SUPABASE_KEY,
+      'Prefer':'return=minimal'
+    },
+    body:JSON.stringify({value:JSON.stringify(value)})
   });
   if(!r.ok){const e=await r.text();throw new Error(r.status+': '+e);}
 }
